@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
 
 /// Trait defining the Ranges API
 pub trait BlockRangesTrait {
     /// Converts a sorted and deduplicated Vec<u64> into the Ranges structure
-    fn from_sorted_vec(numbers: Vec<u64>) -> Self
+    fn from_sorted_vec(numbers: &[u64]) -> Self
     where
         Self: Sized;
 
@@ -45,9 +44,9 @@ pub struct TreeSetRanges {
 }
 
 impl BlockRangesTrait for HashSetRanges {
-    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+    fn from_sorted_vec(numbers: &[u64]) -> Self {
         Self {
-            numbers: numbers.into_iter().collect(),
+            numbers: numbers.to_vec().into_iter().collect(),
         }
     }
 
@@ -68,9 +67,9 @@ impl BlockRangesTrait for HashSetRanges {
 }
 
 impl BlockRangesTrait for TreeSetRanges {
-    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+    fn from_sorted_vec(numbers: &[u64]) -> Self {
         Self {
-            numbers: numbers.into_iter().collect(),
+            numbers: numbers.to_vec().into_iter().collect(),
         }
     }
 
@@ -102,13 +101,13 @@ pub struct BlockRangeSet {
 }
 
 impl BlockRangesTrait for BlockRangeSet {
-    fn from_sorted_vec(input: Vec<u64>) -> Self {
+    fn from_sorted_vec(input: &[u64]) -> Self {
         let mut set = Self { ranges: Vec::new() };
         if input.is_empty() {
             return set;
         }
 
-        let mut numbers = input.clone();
+        let mut numbers = input.to_vec();
         numbers.sort_unstable();
         numbers.dedup();
 
@@ -199,313 +198,6 @@ impl BlockRangesTrait for BlockRangeSet {
     }
 }
 
-/// Struct of Arrays (StrOfArr) Implementation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RangesStrOfArr {
-    starts: Vec<u64>,
-    counts: Vec<u32>,
-}
-
-impl BlockRangesTrait for RangesStrOfArr {
-    fn from_sorted_vec(input: Vec<u64>) -> Self {
-        let mut runs = RangesStrOfArr {
-            starts: Vec::new(),
-            counts: Vec::new(),
-        };
-
-        if input.is_empty() {
-            return runs;
-        }
-
-        let mut numbers = input.clone();
-        numbers.sort_unstable();
-        numbers.dedup();
-
-        let mut run_start = numbers[0];
-        let mut run_length = 1;
-
-        for &num in numbers.iter().skip(1) {
-            if num == run_start + run_length as u64 {
-                run_length += 1;
-            } else {
-                runs.starts.push(run_start);
-                runs.counts.push(run_length);
-                run_start = num;
-                run_length = 1;
-            }
-        }
-
-        // Push the last run
-        runs.starts.push(run_start);
-        runs.counts.push(run_length);
-
-        runs
-    }
-
-    fn merge(&mut self, other: &Self) {
-        let mut merged_starts = Vec::with_capacity(self.starts.len() + other.starts.len());
-        let mut merged_counts = Vec::with_capacity(self.counts.len() + other.counts.len());
-
-        let mut i = 0;
-        let mut j = 0;
-
-        // Merge the two sorted run lists
-        while i < self.starts.len() && j < other.starts.len() {
-            if self.starts[i] < other.starts[j] {
-                merged_starts.push(self.starts[i]);
-                merged_counts.push(self.counts[i]);
-                i += 1;
-            } else {
-                merged_starts.push(other.starts[j]);
-                merged_counts.push(other.counts[j]);
-                j += 1;
-            }
-        }
-
-        // Append any remaining runs
-        while i < self.starts.len() {
-            merged_starts.push(self.starts[i]);
-            merged_counts.push(self.counts[i]);
-            i += 1;
-        }
-
-        while j < other.starts.len() {
-            merged_starts.push(other.starts[j]);
-            merged_counts.push(other.counts[j]);
-            j += 1;
-        }
-
-        // Now, merge overlapping or adjacent runs
-        let mut reduced_starts = Vec::with_capacity(merged_starts.len());
-        let mut reduced_counts = Vec::with_capacity(merged_counts.len());
-
-        for idx in 0..merged_starts.len() {
-            let current_start = merged_starts[idx];
-            let current_count = merged_counts[idx];
-
-            if reduced_starts.is_empty() {
-                reduced_starts.push(current_start);
-                reduced_counts.push(current_count);
-            } else {
-                let last_idx = reduced_starts.len() - 1;
-                let last_start = reduced_starts[last_idx];
-                let last_count = reduced_counts[last_idx];
-                let last_end = last_start + last_count as u64;
-
-                if current_start <= last_end {
-                    // Overlapping or adjacent runs; merge them
-                    let new_end = (current_start + current_count as u64).max(last_end);
-                    reduced_counts[last_idx] = (new_end - last_start) as u32;
-                } else {
-                    // Non-overlapping run; add as new
-                    reduced_starts.push(current_start);
-                    reduced_counts.push(current_count);
-                }
-            }
-        }
-
-        // Update self with merged and reduced runs
-        self.starts = reduced_starts;
-        self.counts = reduced_counts;
-    }
-
-    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
-        let mut missing = Vec::new();
-        let mut run_iter = self.starts.iter().zip(self.counts.iter()).peekable();
-
-        // Sort and deduplicate the input numbers for efficient traversal
-        let mut sorted_nums = nums.to_vec();
-        sorted_nums.sort_unstable();
-        sorted_nums.dedup();
-
-        for &num in &sorted_nums {
-            // Advance the run iterator until the current run could contain the number
-            while let Some(&(run_start, run_count)) = run_iter.peek() {
-                let run_end = *run_start + (*run_count as u64);
-                match num.cmp(run_start) {
-                    Ordering::Less => {
-                        // Number is before the current run
-                        missing.push(num);
-                        break;
-                    }
-                    Ordering::Greater => {
-                        if num >= run_end {
-                            // Number is after the current run; advance
-                            run_iter.next();
-                        } else {
-                            // Number is within the current run
-                            break;
-                        }
-                    }
-                    Ordering::Equal => {
-                        // Number is exactly at the start of the run
-                        break;
-                    }
-                }
-            }
-
-            // If no runs left, all remaining numbers are missing
-            if run_iter.peek().is_none() && !missing.contains(&num) {
-                missing.push(num);
-            }
-        }
-
-        missing
-    }
-
-    fn len(&self) -> usize {
-        self.counts.iter().map(|&x| x as usize).sum()
-    }
-}
-
-/// Array of Structs (VecOfStr) Implementation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Run {
-    start: u64,
-    count: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RangesVecOfStr {
-    runs: Vec<Run>,
-}
-
-impl BlockRangesTrait for RangesVecOfStr {
-    fn from_sorted_vec(input: Vec<u64>) -> Self {
-        let mut runs = RangesVecOfStr { runs: Vec::new() };
-
-        if input.is_empty() {
-            return runs;
-        }
-
-        let mut numbers = input.clone();
-        numbers.sort_unstable();
-        numbers.dedup();
-
-        let mut run_start = numbers[0];
-        let mut run_length = 1;
-
-        for &num in numbers.iter().skip(1) {
-            if num == run_start + run_length as u64 {
-                run_length += 1;
-            } else {
-                runs.runs.push(Run {
-                    start: run_start,
-                    count: run_length,
-                });
-                run_start = num;
-                run_length = 1;
-            }
-        }
-
-        // Push the last run
-        runs.runs.push(Run {
-            start: run_start,
-            count: run_length,
-        });
-
-        runs
-    }
-
-    fn merge(&mut self, other: &Self) {
-        let mut merged_runs = Vec::with_capacity(self.runs.len() + other.runs.len());
-
-        let mut i = 0;
-        let mut j = 0;
-
-        // Merge the two sorted run lists
-        while i < self.runs.len() && j < other.runs.len() {
-            if self.runs[i].start < other.runs[j].start {
-                merged_runs.push(self.runs[i].clone());
-                i += 1;
-            } else {
-                merged_runs.push(other.runs[j].clone());
-                j += 1;
-            }
-        }
-
-        // Append any remaining runs
-        while i < self.runs.len() {
-            merged_runs.push(self.runs[i].clone());
-            i += 1;
-        }
-
-        while j < other.runs.len() {
-            merged_runs.push(other.runs[j].clone());
-            j += 1;
-        }
-
-        // Now, merge overlapping or adjacent runs
-        let mut reduced_runs: Vec<Run> = Vec::with_capacity(merged_runs.len());
-
-        for run in merged_runs {
-            if let Some(last) = reduced_runs.last_mut() {
-                let last_end = last.start + last.count as u64;
-                if run.start <= last_end {
-                    // Overlapping or adjacent runs; merge them
-                    let new_end = (run.start + run.count as u64).max(last_end);
-                    last.count = (new_end - last.start) as u32;
-                } else {
-                    // Non-overlapping run; add as new
-                    reduced_runs.push(run);
-                }
-            } else {
-                reduced_runs.push(run);
-            }
-        }
-
-        self.runs = reduced_runs;
-    }
-
-    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
-        let mut missing = Vec::new();
-        let mut run_iter = self.runs.iter().peekable();
-
-        // Sort and deduplicate the input numbers for efficient traversal
-        let mut sorted_nums = nums.to_vec();
-        sorted_nums.sort_unstable();
-        sorted_nums.dedup();
-
-        for &num in &sorted_nums {
-            // Advance the run iterator until the current run could contain the number
-            while let Some(run) = run_iter.peek() {
-                let run_end = run.start + run.count as u64;
-                match num.cmp(&run.start) {
-                    Ordering::Less => {
-                        // Number is before the current run
-                        missing.push(num);
-                        break;
-                    }
-                    Ordering::Greater => {
-                        if num >= run_end {
-                            // Number is after the current run; advance
-                            run_iter.next();
-                        } else {
-                            // Number is within the current run
-                            break;
-                        }
-                    }
-                    Ordering::Equal => {
-                        // Number is exactly at the start of the run
-                        break;
-                    }
-                }
-            }
-
-            // If no runs left, all remaining numbers are missing
-            if run_iter.peek().is_none() && !missing.contains(&num) {
-                missing.push(num);
-            }
-        }
-
-        missing
-    }
-
-    fn len(&self) -> usize {
-        self.runs.iter().map(|x| x.count as usize).sum()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,7 +260,7 @@ mod tests {
     {
         // Run all test cases
         for case in get_test_cases() {
-            let implementation = T::from_sorted_vec(case.numbers.clone());
+            let implementation = T::from_sorted_vec(&case.numbers);
             assert_eq!(
                 implementation.len(),
                 case.expected_len,
@@ -606,8 +298,8 @@ mod tests {
         ];
 
         for (nums1, nums2, expected_len, case_name) in test_cases {
-            let mut impl1 = T::from_sorted_vec(nums1);
-            let impl2 = T::from_sorted_vec(nums2);
+            let mut impl1 = T::from_sorted_vec(&nums1);
+            let impl2 = T::from_sorted_vec(&nums2);
             impl1.merge(&impl2);
             assert_eq!(
                 impl1.len(),
@@ -634,7 +326,7 @@ mod tests {
         ];
 
         for (range_nums, query_nums, expected_missing, case_name) in test_cases {
-            let implementation = T::from_sorted_vec(range_nums);
+            let implementation = T::from_sorted_vec(&range_nums);
             let missing = implementation.find_missing(&query_nums);
             assert_eq!(
                 missing, expected_missing,
@@ -656,7 +348,7 @@ mod tests {
         let test_cases = vec![vec![1, 2, 3, 5, 6], vec![], vec![42], vec![1, 3, 5, 7, 9]];
 
         for (i, nums) in test_cases.iter().enumerate() {
-            let original = T::from_sorted_vec(nums.clone());
+            let original = T::from_sorted_vec(&nums);
             let serialized = BlockRangesTrait::serialize(&original);
             let deserialized = BlockRangesTrait::deserialize(&serialized);
             assert_eq!(
@@ -673,7 +365,7 @@ mod tests {
     {
         // Test with large numbers
         let large_nums = vec![u64::MAX - 2, u64::MAX - 1, u64::MAX];
-        let implementation = T::from_sorted_vec(large_nums.clone());
+        let implementation = T::from_sorted_vec(&large_nums);
         assert_eq!(implementation.len(), 3);
 
         // Test with unordered input
@@ -683,13 +375,13 @@ mod tests {
             v.sort_unstable();
             v
         };
-        let impl_unordered = T::from_sorted_vec(unordered);
-        let impl_ordered = T::from_sorted_vec(ordered);
+        let impl_unordered = T::from_sorted_vec(&unordered);
+        let impl_ordered = T::from_sorted_vec(&ordered);
         assert_eq!(impl_unordered.len(), impl_ordered.len());
 
         // Test with duplicates
         let with_duplicates = vec![1, 2, 2, 3, 3, 3, 4];
-        let impl_duplicates = T::from_sorted_vec(with_duplicates);
+        let impl_duplicates = T::from_sorted_vec(&with_duplicates);
         assert_eq!(impl_duplicates.len(), 4);
     }
 
@@ -697,16 +389,6 @@ mod tests {
     #[test]
     fn test_block_range_set() {
         run_implementation_tests::<BlockRangeSet>();
-    }
-
-    #[test]
-    fn test_ranges_soa() {
-        run_implementation_tests::<RangesStrOfArr>();
-    }
-
-    #[test]
-    fn test_ranges_aos() {
-        run_implementation_tests::<RangesVecOfStr>();
     }
 
     #[test]
@@ -727,7 +409,7 @@ mod tests {
         where
             T: BlockRangesTrait + for<'a> Deserialize<'a> + Serialize,
         {
-            let implementation = T::from_sorted_vec(numbers.to_vec());
+            let implementation = T::from_sorted_vec(numbers);
 
             // Test finding missing numbers
             let mut rng = rand::thread_rng();
@@ -751,8 +433,6 @@ mod tests {
         let numbers = generate_sorted_unique_vec(range, &gaps);
 
         test_implementation::<BlockRangeSet>("BlockRangeSet", &numbers);
-        test_implementation::<RangesStrOfArr>("RangesStrOfArr", &numbers);
-        test_implementation::<RangesVecOfStr>("RangesAoS", &numbers);
         test_implementation::<HashSetRanges>("HashSetRange", &numbers);
         test_implementation::<TreeSetRanges>("TreeSetRange", &numbers);
     }
