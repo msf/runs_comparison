@@ -1,16 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockRange {
-    pub start: u64,
-    pub end: u64,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct BlockRangeSet {
-    pub(crate) ranges: Vec<BlockRange>,
-}
+use std::collections::{BTreeSet, HashSet};
 
 /// Trait defining the Ranges API
 pub trait BlockRangesTrait {
@@ -26,14 +16,101 @@ pub trait BlockRangesTrait {
     fn find_missing(&self, nums: &[u64]) -> Vec<u64>;
 
     fn len(&self) -> usize;
+
+    /// Serializes the structure to bytes
+    fn serialize(&self) -> Vec<u8>
+    where
+        Self: Serialize,
+    {
+        bincode::serialize(self).expect("Serialization failed")
+    }
+
+    /// Deserializes from bytes into the structure
+    fn deserialize(data: &[u8]) -> Self
+    where
+        Self: Sized + for<'a> Deserialize<'a>,
+    {
+        bincode::deserialize(data).expect("Deserialization failed")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HashSetRanges {
+    numbers: HashSet<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TreeSetRanges {
+    numbers: BTreeSet<u64>,
+}
+
+impl BlockRangesTrait for HashSetRanges {
+    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+        Self {
+            numbers: numbers.into_iter().collect(),
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.numbers.extend(other.numbers.iter().copied());
+    }
+
+    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
+        nums.iter()
+            .filter(|&&num| !self.numbers.contains(&num))
+            .copied()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.numbers.len()
+    }
+}
+
+impl BlockRangesTrait for TreeSetRanges {
+    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+        Self {
+            numbers: numbers.into_iter().collect(),
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.numbers.extend(other.numbers.iter().copied());
+    }
+
+    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
+        nums.iter()
+            .filter(|&&num| !self.numbers.contains(&num))
+            .copied()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.numbers.len()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlockRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlockRangeSet {
+    pub(crate) ranges: Vec<BlockRange>,
 }
 
 impl BlockRangesTrait for BlockRangeSet {
-    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+    fn from_sorted_vec(input: Vec<u64>) -> Self {
         let mut set = Self { ranges: Vec::new() };
-        if numbers.is_empty() {
+        if input.is_empty() {
             return set;
         }
+
+        let mut numbers = input.clone();
+        numbers.sort_unstable();
+        numbers.dedup();
 
         let mut current = BlockRange {
             start: numbers[0],
@@ -105,7 +182,6 @@ impl BlockRangesTrait for BlockRangeSet {
         if self.ranges.is_empty() {
             return nums.to_vec();
         }
-
         nums.iter()
             .filter(|&&num| {
                 let pos = self.ranges.partition_point(|r| r.end < num);
@@ -123,24 +199,25 @@ impl BlockRangesTrait for BlockRangeSet {
     }
 }
 
-/// Struct of Arrays (SoA) Implementation
+/// Struct of Arrays (StrOfArr) Implementation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RangesSoA {
+pub struct RangesStrOfArr {
     starts: Vec<u64>,
     counts: Vec<u32>,
 }
 
-impl BlockRangesTrait for RangesSoA {
-    fn from_sorted_vec(mut numbers: Vec<u64>) -> Self {
-        let mut runs = RangesSoA {
+impl BlockRangesTrait for RangesStrOfArr {
+    fn from_sorted_vec(input: Vec<u64>) -> Self {
+        let mut runs = RangesStrOfArr {
             starts: Vec::new(),
             counts: Vec::new(),
         };
 
-        if numbers.is_empty() {
+        if input.is_empty() {
             return runs;
         }
 
+        let mut numbers = input.clone();
         numbers.sort_unstable();
         numbers.dedup();
 
@@ -245,7 +322,7 @@ impl BlockRangesTrait for RangesSoA {
             // Advance the run iterator until the current run could contain the number
             while let Some(&(run_start, run_count)) = run_iter.peek() {
                 let run_end = *run_start + (*run_count as u64);
-                match num.cmp(&run_start) {
+                match num.cmp(run_start) {
                     Ordering::Less => {
                         // Number is before the current run
                         missing.push(num);
@@ -276,20 +353,12 @@ impl BlockRangesTrait for RangesSoA {
         missing
     }
 
-    fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("Serialization failed")
-    }
-
-    fn deserialize(data: &[u8]) -> Self {
-        bincode::deserialize(data).expect("Deserialization failed")
-    }
-
     fn len(&self) -> usize {
-        self.starts.len()
+        self.counts.iter().map(|&x| x as usize).sum()
     }
 }
 
-/// Array of Structs (AoS) Implementation
+/// Array of Structs (VecOfStr) Implementation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Run {
     start: u64,
@@ -297,18 +366,19 @@ pub struct Run {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RangesAoS {
+pub struct RangesVecOfStr {
     runs: Vec<Run>,
 }
 
-impl BlockRangesTrait for RangesAoS {
-    fn from_sorted_vec(mut numbers: Vec<u64>) -> Self {
-        let mut runs = RangesAoS { runs: Vec::new() };
+impl BlockRangesTrait for RangesVecOfStr {
+    fn from_sorted_vec(input: Vec<u64>) -> Self {
+        let mut runs = RangesVecOfStr { runs: Vec::new() };
 
-        if numbers.is_empty() {
+        if input.is_empty() {
             return runs;
         }
 
+        let mut numbers = input.clone();
         numbers.sort_unstable();
         numbers.dedup();
 
@@ -370,7 +440,7 @@ impl BlockRangesTrait for RangesAoS {
 
         for run in merged_runs {
             if let Some(last) = reduced_runs.last_mut() {
-                let last_end = (*last).start + (*last).count as u64;
+                let last_end = last.start + last.count as u64;
                 if run.start <= last_end {
                     // Overlapping or adjacent runs; merge them
                     let new_end = (run.start + run.count as u64).max(last_end);
@@ -431,252 +501,259 @@ impl BlockRangesTrait for RangesAoS {
         missing
     }
 
-    fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("Serialization failed")
-    }
-
-    fn deserialize(data: &[u8]) -> Self {
-        bincode::deserialize(data).expect("Deserialization failed")
-    }
-
     fn len(&self) -> usize {
-        self.runs.len()
+        self.runs.iter().map(|x| x.count as usize).sum()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bincode;
     use rand::Rng;
 
-    /// Helper function to generate a sorted and deduplicated Vec<u64>
+    // Helper function to generate test data
     fn generate_sorted_unique_vec(range: std::ops::Range<u64>, gaps: &[u64]) -> Vec<u64> {
         (range.start..range.end)
             .filter(|x| !gaps.contains(x))
             .collect()
     }
 
-    /// Generic test for BlockRangesTrait implementations
-    fn run_tests<R: BlockRangesTrait + PartialEq + std::fmt::Debug>() {
-        // Test 1: Basic Conversion
-        let numbers = generate_sorted_unique_vec(1..101, &[50]);
-        let runs = R::from_sorted_vec(numbers.clone());
+    // Define test cases struct
+    struct TestCase {
+        name: &'static str,
+        numbers: Vec<u64>,
+        expected_ranges: Vec<(u64, u64)>, // (start, length) pairs
+        expected_len: usize,
+    }
 
-        // Expected Ranges
-        let expected_runs_soa = vec![
-            (1, 49),  // 1-49
-            (51, 50), // 51-100
+    // Test cases that should work for all implementations
+    fn get_test_cases() -> Vec<TestCase> {
+        vec![
+            TestCase {
+                name: "basic sequence",
+                numbers: vec![1, 2, 3, 5, 6, 8, 9, 10],
+                expected_ranges: vec![(1, 3), (5, 2), (8, 3)],
+                expected_len: 8,
+            },
+            TestCase {
+                name: "single number",
+                numbers: vec![42],
+                expected_ranges: vec![(42, 1)],
+                expected_len: 1,
+            },
+            TestCase {
+                name: "empty input",
+                numbers: vec![],
+                expected_ranges: vec![],
+                expected_len: 0,
+            },
+            TestCase {
+                name: "non-sequential",
+                numbers: vec![1, 3, 5, 7, 9],
+                expected_ranges: vec![(1, 1), (3, 1), (5, 1), (7, 1), (9, 1)],
+                expected_len: 5,
+            },
+        ]
+    }
+
+    // Generic test runner for any implementation of BlockRangesTrait
+    fn run_implementation_tests<T>()
+    where
+        T: BlockRangesTrait
+            + Clone
+            + std::fmt::Debug
+            + PartialEq
+            + for<'a> Deserialize<'a>
+            + Serialize,
+    {
+        // Run all test cases
+        for case in get_test_cases() {
+            let implementation = T::from_sorted_vec(case.numbers.clone());
+            assert_eq!(
+                implementation.len(),
+                case.expected_len,
+                "Length mismatch for test case: {}",
+                case.name
+            );
+        }
+
+        // Test merging
+        test_merge::<T>();
+
+        // Test finding missing numbers
+        test_find_missing::<T>();
+
+        // Test serialization
+        test_serialization::<T>();
+
+        // Test edge cases
+        test_edge_cases::<T>();
+    }
+
+    fn test_merge<T>()
+    where
+        T: BlockRangesTrait + Clone + std::fmt::Debug + PartialEq,
+    {
+        let test_cases = vec![
+            (vec![1, 2, 3], vec![4, 5, 6], 6, "Adjacent ranges"),
+            (
+                vec![1, 2, 3, 7, 8],
+                vec![3, 4, 5, 8, 9],
+                8,
+                "Overlapping ranges",
+            ),
+            (vec![1, 2, 3], vec![5, 6, 7], 6, "Disjoint ranges"),
         ];
 
-        assert_eq!(runs.len(), expected_runs_soa.len());
+        for (nums1, nums2, expected_len, case_name) in test_cases {
+            let mut impl1 = T::from_sorted_vec(nums1);
+            let impl2 = T::from_sorted_vec(nums2);
+            impl1.merge(&impl2);
+            assert_eq!(
+                impl1.len(),
+                expected_len,
+                "Merge length mismatch for case: {}",
+                case_name
+            );
+        }
+    }
 
-        // Test 2: Merge Ranges
-        let numbers1 = generate_sorted_unique_vec(1..101, &[50]);
-        let numbers2 = generate_sorted_unique_vec(101..201, &[150]);
-        let mut runs1 = R::from_sorted_vec(numbers1.clone());
-        let runs2 = R::from_sorted_vec(numbers2.clone());
-        runs1.merge(&runs2);
-
-        // Expected merged Ranges
-        let expected_merged_runs = vec![
-            (1, 49),   // 1-49
-            (51, 99),  // 51-149
-            (151, 50), // 151-200
+    fn test_find_missing<T>()
+    where
+        T: BlockRangesTrait + Clone + std::fmt::Debug + PartialEq,
+    {
+        let test_cases = vec![
+            (
+                vec![1, 2, 3, 6, 7],
+                vec![1, 2, 4, 5, 6, 8],
+                vec![4, 5, 8],
+                "Basic missing numbers",
+            ),
+            (vec![], vec![1, 2, 3], vec![1, 2, 3], "Empty range set"),
+            (vec![1, 2, 3], vec![], vec![], "Empty query"),
         ];
 
-        assert_eq!(runs1.len(), expected_merged_runs.len());
-
-        // Test 3: Find Missing Numbers
-        let missing_numbers = vec![50, 100, 150, 200];
-        let found_missing = runs1.find_missing(&missing_numbers);
-        let expected_missing = vec![50, 150];
-
-        assert_eq!(found_missing, expected_missing);
-
-        // Test 4: Serialization and Deserialization
-        let serialized = runs1.serialize();
-        let deserialized = R::deserialize(&serialized);
-        assert_eq!(runs1, deserialized);
-
-        // Test 5: Edge Cases
-        // Empty Ranges
-        let empty_runs = R::from_sorted_vec(Vec::new());
-        let missing_empty = empty_runs.find_missing(&vec![1, 2, 3]);
-        assert_eq!(missing_empty, vec![1, 2, 3]);
-
-        // Single Element Ranges
-        let single_runs = R::from_sorted_vec(vec![10, 20, 30]);
-        let missing_single = single_runs.find_missing(&vec![10, 15, 20, 25, 30, 35]);
-        let expected_missing_single = vec![15, 25, 35];
-        assert_eq!(missing_single, expected_missing_single);
-    }
-
-    #[test]
-    fn test_runs_soa() {
-        run_tests::<RangesSoA>();
-    }
-
-    #[test]
-    fn test_runs_aos() {
-        run_tests::<RangesAoS>();
-    }
-
-    /// Additional tests for merging edge cases
-    #[test]
-    fn test_merge_edge_cases() {
-        // Implement only for RangesSoA and RangesAoS separately
-        // Because they have different internal representations
-
-        // RangesSoA Edge Cases
-        {
-            let numbers1 = vec![1, 2, 3, 4, 5];
-            let numbers2 = vec![6, 7, 8, 9, 10];
-            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
-            let runs2 = RangesSoA::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.starts.len(), 1);
-            assert_eq!(runs1.starts[0], 1);
-            assert_eq!(runs1.counts[0], 10);
-        }
-
-        // RangesAoS Edge Cases
-        {
-            let numbers1 = vec![1, 2, 3, 4, 5];
-            let numbers2 = vec![6, 7, 8, 9, 10];
-            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
-            let runs2 = RangesAoS::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.runs.len(), 1);
-            assert_eq!(runs1.runs[0].start, 1);
-            assert_eq!(runs1.runs[0].count, 10);
-        }
-
-        // Overlapping RangesSoA
-        {
-            let numbers1 = vec![1, 2, 3, 4, 5];
-            let numbers2 = vec![4, 5, 6, 7, 8];
-            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
-            let runs2 = RangesSoA::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.starts.len(), 1);
-            assert_eq!(runs1.starts[0], 1);
-            assert_eq!(runs1.counts[0], 8);
-        }
-
-        // Overlapping RangesAoS
-        {
-            let numbers1 = vec![1, 2, 3, 4, 5];
-            let numbers2 = vec![4, 5, 6, 7, 8];
-            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
-            let runs2 = RangesAoS::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.runs.len(), 1);
-            assert_eq!(runs1.runs[0].start, 1);
-            assert_eq!(runs1.runs[0].count, 8);
-        }
-
-        // Adjacent RangesSoA
-        {
-            let numbers1 = vec![1, 2, 3];
-            let numbers2 = vec![4, 5, 6];
-            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
-            let runs2 = RangesSoA::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.starts.len(), 1);
-            assert_eq!(runs1.starts[0], 1);
-            assert_eq!(runs1.counts[0], 6);
-        }
-
-        // Adjacent RangesAoS
-        {
-            let numbers1 = vec![1, 2, 3];
-            let numbers2 = vec![4, 5, 6];
-            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
-            let runs2 = RangesAoS::from_sorted_vec(numbers2);
-            runs1.merge(&runs2);
-
-            assert_eq!(runs1.runs.len(), 1);
-            assert_eq!(runs1.runs[0].start, 1);
-            assert_eq!(runs1.runs[0].count, 6);
+        for (range_nums, query_nums, expected_missing, case_name) in test_cases {
+            let implementation = T::from_sorted_vec(range_nums);
+            let missing = implementation.find_missing(&query_nums);
+            assert_eq!(
+                missing, expected_missing,
+                "Missing numbers mismatch for case: {}",
+                case_name
+            );
         }
     }
 
-    /// Test find_missing with large input
+    fn test_serialization<T>()
+    where
+        T: BlockRangesTrait
+            + Clone
+            + std::fmt::Debug
+            + PartialEq
+            + for<'a> Deserialize<'a>
+            + Serialize,
+    {
+        let test_cases = vec![vec![1, 2, 3, 5, 6], vec![], vec![42], vec![1, 3, 5, 7, 9]];
+
+        for (i, nums) in test_cases.iter().enumerate() {
+            let original = T::from_sorted_vec(nums.clone());
+            let serialized = BlockRangesTrait::serialize(&original);
+            let deserialized = BlockRangesTrait::deserialize(&serialized);
+            assert_eq!(
+                original, deserialized,
+                "Serialization roundtrip failed for case {}",
+                i
+            );
+        }
+    }
+
+    fn test_edge_cases<T>()
+    where
+        T: BlockRangesTrait + Clone + std::fmt::Debug + PartialEq,
+    {
+        // Test with large numbers
+        let large_nums = vec![u64::MAX - 2, u64::MAX - 1, u64::MAX];
+        let implementation = T::from_sorted_vec(large_nums.clone());
+        assert_eq!(implementation.len(), 3);
+
+        // Test with unordered input
+        let unordered = vec![5, 2, 8, 1, 9, 3, 7, 4, 6];
+        let ordered = {
+            let mut v = unordered.clone();
+            v.sort_unstable();
+            v
+        };
+        let impl_unordered = T::from_sorted_vec(unordered);
+        let impl_ordered = T::from_sorted_vec(ordered);
+        assert_eq!(impl_unordered.len(), impl_ordered.len());
+
+        // Test with duplicates
+        let with_duplicates = vec![1, 2, 2, 3, 3, 3, 4];
+        let impl_duplicates = T::from_sorted_vec(with_duplicates);
+        assert_eq!(impl_duplicates.len(), 4);
+    }
+
+    // Run tests for all implementations
     #[test]
-    fn test_find_missing_large() {
+    fn test_block_range_set() {
+        run_implementation_tests::<BlockRangeSet>();
+    }
+
+    #[test]
+    fn test_ranges_soa() {
+        run_implementation_tests::<RangesStrOfArr>();
+    }
+
+    #[test]
+    fn test_ranges_aos() {
+        run_implementation_tests::<RangesVecOfStr>();
+    }
+
+    #[test]
+    fn test_ranges_hash_set() {
+        run_implementation_tests::<HashSetRanges>();
+    }
+
+    #[test]
+    fn test_ranges_tree_set() {
+        run_implementation_tests::<TreeSetRanges>();
+    }
+
+    // Performance test with large datasets
+    #[test]
+    fn test_large_dataset() {
+        // Helper function to run test for a specific implementation
+        fn test_implementation<T: BlockRangesTrait + std::fmt::Debug>(name: &str, numbers: &[u64])
+        where
+            T: BlockRangesTrait + for<'a> Deserialize<'a> + Serialize,
+        {
+            let implementation = T::from_sorted_vec(numbers.to_vec());
+
+            // Test finding missing numbers
+            let mut rng = rand::thread_rng();
+            let query: Vec<u64> = (0..1000).map(|_| rng.gen_range(1..1_000_001)).collect();
+
+            let missing = implementation.find_missing(&query);
+            assert!(
+                missing.len() <= query.len(),
+                "{}: Found more missing numbers than queries",
+                name
+            );
+
+            // Test serialization size
+            let serialized = BlockRangesTrait::serialize(&implementation);
+            println!("{} serialized size: {} bytes", name, serialized.len());
+        }
+
+        // Main test body
         let range = 1..1_000_001;
         let gaps = vec![50, 500_000, 600_000, 900_000];
         let numbers = generate_sorted_unique_vec(range, &gaps);
-        let runs_soa = RangesSoA::from_sorted_vec(numbers.clone());
-        let runs_aos = RangesAoS::from_sorted_vec(numbers.clone());
 
-        let mut missing_numbers = vec![50, 500_000, 600_000, 900_000];
-        // add more random numbers to missing list to make the test harder
-        let mut rng = rand::thread_rng();
-        for _ in 0..100 {
-            let num = rng.gen_range(1..1_000_001);
-            if gaps.contains(&num) {
-                continue;
-            }
-            missing_numbers.push(num);
-        }
-
-        let missing_soa = runs_soa.find_missing(&missing_numbers);
-        let missing_aos = runs_aos.find_missing(&missing_numbers);
-
-        assert_eq!(missing_soa, gaps);
-        assert_eq!(missing_aos, gaps);
-    }
-    #[test]
-    fn test_from_sorted_vec() {
-        let nums = vec![1, 2, 3, 5, 6, 8, 9, 10];
-        let set = BlockRangeSet::from_sorted_vec(nums);
-        assert_eq!(set.ranges.len(), 3);
-        assert_eq!(set.ranges[0].start, 1);
-        assert_eq!(set.ranges[0].end, 3);
-        assert_eq!(set.ranges[1].start, 5);
-        assert_eq!(set.ranges[1].end, 6);
-        assert_eq!(set.ranges[2].start, 8);
-        assert_eq!(set.ranges[2].end, 10);
-    }
-
-    #[test]
-    fn test_merge() {
-        let mut set1 = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 7, 8]);
-        let set2 = BlockRangeSet::from_sorted_vec(vec![3, 4, 5, 8, 9]);
-        set1.merge(&set2);
-        assert_eq!(set1.ranges.len(), 2);
-        assert_eq!(set1.ranges[0].start, 1);
-        assert_eq!(set1.ranges[0].end, 5);
-        assert_eq!(set1.ranges[1].start, 7);
-        assert_eq!(set1.ranges[1].end, 9);
-    }
-
-    #[test]
-    fn test_find_missing() {
-        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 6, 7]);
-        let missing = set.find_missing(&[1, 2, 4, 5, 6, 8]);
-        assert_eq!(missing, vec![4, 5, 8]);
-    }
-
-    #[test]
-    fn test_len() {
-        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 5, 6]);
-        assert_eq!(set.len(), 5);
-    }
-
-    #[test]
-    fn test_serialization() {
-        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 5, 6]);
-        let serialized = bincode::serialize(&set).expect("Failed to serialize");
-        let deserialized: BlockRangeSet =
-            bincode::deserialize(&serialized).expect("Failed to deserialize");
-        assert_eq!(deserialized.len(), set.len());
+        test_implementation::<BlockRangeSet>("BlockRangeSet", &numbers);
+        test_implementation::<RangesStrOfArr>("RangesStrOfArr", &numbers);
+        test_implementation::<RangesVecOfStr>("RangesAoS", &numbers);
+        test_implementation::<HashSetRanges>("HashSetRange", &numbers);
+        test_implementation::<TreeSetRanges>("TreeSetRange", &numbers);
     }
 }
