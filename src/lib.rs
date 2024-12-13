@@ -1,40 +1,138 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-/// Trait defining the Runs API
-pub trait RunsTrait {
-    /// Converts a sorted and deduplicated Vec<u64> into the Runs structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct BlockRangeSet {
+    pub(crate) ranges: Vec<BlockRange>,
+}
+
+/// Trait defining the Ranges API
+pub trait BlockRangesTrait {
+    /// Converts a sorted and deduplicated Vec<u64> into the Ranges structure
     fn from_sorted_vec(numbers: Vec<u64>) -> Self
     where
         Self: Sized;
 
-    /// Merges another Runs structure into self
+    /// Merges another Ranges structure into self
     fn merge(&mut self, other: &Self);
 
-    /// Finds missing numbers from the provided list that are not present in the Runs
+    /// Finds missing numbers from the provided list that are not present in the Ranges
     fn find_missing(&self, nums: &[u64]) -> Vec<u64>;
-
-    /// Serializes the Runs structure into a binary format
-    fn serialize(&self) -> Vec<u8>;
-
-    /// Deserializes the Runs structure from a binary format
-    fn deserialize(data: &[u8]) -> Self
-    where
-        Self: Sized;
 
     fn len(&self) -> usize;
 }
 
+impl BlockRangesTrait for BlockRangeSet {
+    fn from_sorted_vec(numbers: Vec<u64>) -> Self {
+        let mut set = Self { ranges: Vec::new() };
+        if numbers.is_empty() {
+            return set;
+        }
+
+        let mut current = BlockRange {
+            start: numbers[0],
+            end: numbers[0],
+        };
+
+        for &num in numbers.iter().skip(1) {
+            if num == current.end + 1 {
+                current.end = num;
+            } else {
+                set.ranges.push(current);
+                current = BlockRange {
+                    start: num,
+                    end: num,
+                };
+            }
+        }
+        set.ranges.push(current);
+        set
+    }
+
+    fn merge(&mut self, other: &Self) {
+        if other.ranges.is_empty() {
+            return;
+        }
+        if self.ranges.is_empty() {
+            self.ranges = other.ranges.clone();
+            return;
+        }
+
+        // First pass: merge both ordered lists into a new Vec
+        let mut merged = Vec::with_capacity(self.ranges.len() + other.ranges.len());
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.ranges.len() && j < other.ranges.len() {
+            if self.ranges[i].start < other.ranges[j].start {
+                merged.push(self.ranges[i].clone());
+                i += 1;
+            } else {
+                merged.push(other.ranges[j].clone());
+                j += 1;
+            }
+        }
+
+        // Add remaining ranges
+        merged.extend_from_slice(&self.ranges[i..]);
+        merged.extend_from_slice(&other.ranges[j..]);
+
+        // Second pass: reduce overlapping ranges
+        let mut reduced = Vec::with_capacity(merged.len());
+        let mut current = merged[0].clone();
+
+        for next in merged.iter().skip(1) {
+            if next.start <= current.end + 1 {
+                // Ranges overlap or are adjacent
+                current.end = current.end.max(next.end);
+            } else {
+                reduced.push(current);
+                current = next.clone();
+            }
+        }
+        reduced.push(current);
+
+        self.ranges = reduced;
+    }
+
+    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
+        if self.ranges.is_empty() {
+            return nums.to_vec();
+        }
+
+        nums.iter()
+            .filter(|&&num| {
+                let pos = self.ranges.partition_point(|r| r.end < num);
+                pos >= self.ranges.len() || self.ranges[pos].start > num
+            })
+            .copied()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.ranges
+            .iter()
+            .map(|range| (range.end - range.start + 1) as usize)
+            .sum()
+    }
+}
+
 /// Struct of Arrays (SoA) Implementation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunsSoA {
+pub struct RangesSoA {
     starts: Vec<u64>,
     counts: Vec<u32>,
 }
 
-impl RunsTrait for RunsSoA {
+impl BlockRangesTrait for RangesSoA {
     fn from_sorted_vec(mut numbers: Vec<u64>) -> Self {
-        let mut runs = RunsSoA {
+        let mut runs = RangesSoA {
             starts: Vec::new(),
             counts: Vec::new(),
         };
@@ -199,13 +297,13 @@ pub struct Run {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunsAoS {
+pub struct RangesAoS {
     runs: Vec<Run>,
 }
 
-impl RunsTrait for RunsAoS {
+impl BlockRangesTrait for RangesAoS {
     fn from_sorted_vec(mut numbers: Vec<u64>) -> Self {
-        let mut runs = RunsAoS { runs: Vec::new() };
+        let mut runs = RangesAoS { runs: Vec::new() };
 
         if numbers.is_empty() {
             return runs;
@@ -349,6 +447,7 @@ impl RunsTrait for RunsAoS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bincode;
     use rand::Rng;
 
     /// Helper function to generate a sorted and deduplicated Vec<u64>
@@ -358,13 +457,13 @@ mod tests {
             .collect()
     }
 
-    /// Generic test for RunsTrait implementations
-    fn run_tests<R: RunsTrait + PartialEq + std::fmt::Debug>() {
+    /// Generic test for BlockRangesTrait implementations
+    fn run_tests<R: BlockRangesTrait + PartialEq + std::fmt::Debug>() {
         // Test 1: Basic Conversion
         let numbers = generate_sorted_unique_vec(1..101, &[50]);
         let runs = R::from_sorted_vec(numbers.clone());
 
-        // Expected Runs
+        // Expected Ranges
         let expected_runs_soa = vec![
             (1, 49),  // 1-49
             (51, 50), // 51-100
@@ -372,14 +471,14 @@ mod tests {
 
         assert_eq!(runs.len(), expected_runs_soa.len());
 
-        // Test 2: Merge Runs
+        // Test 2: Merge Ranges
         let numbers1 = generate_sorted_unique_vec(1..101, &[50]);
         let numbers2 = generate_sorted_unique_vec(101..201, &[150]);
         let mut runs1 = R::from_sorted_vec(numbers1.clone());
         let runs2 = R::from_sorted_vec(numbers2.clone());
         runs1.merge(&runs2);
 
-        // Expected merged Runs
+        // Expected merged Ranges
         let expected_merged_runs = vec![
             (1, 49),   // 1-49
             (51, 99),  // 51-149
@@ -401,12 +500,12 @@ mod tests {
         assert_eq!(runs1, deserialized);
 
         // Test 5: Edge Cases
-        // Empty Runs
+        // Empty Ranges
         let empty_runs = R::from_sorted_vec(Vec::new());
         let missing_empty = empty_runs.find_missing(&vec![1, 2, 3]);
         assert_eq!(missing_empty, vec![1, 2, 3]);
 
-        // Single Element Runs
+        // Single Element Ranges
         let single_runs = R::from_sorted_vec(vec![10, 20, 30]);
         let missing_single = single_runs.find_missing(&vec![10, 15, 20, 25, 30, 35]);
         let expected_missing_single = vec![15, 25, 35];
@@ -415,26 +514,26 @@ mod tests {
 
     #[test]
     fn test_runs_soa() {
-        run_tests::<RunsSoA>();
+        run_tests::<RangesSoA>();
     }
 
     #[test]
     fn test_runs_aos() {
-        run_tests::<RunsAoS>();
+        run_tests::<RangesAoS>();
     }
 
     /// Additional tests for merging edge cases
     #[test]
     fn test_merge_edge_cases() {
-        // Implement only for RunsSoA and RunsAoS separately
+        // Implement only for RangesSoA and RangesAoS separately
         // Because they have different internal representations
 
-        // RunsSoA Edge Cases
+        // RangesSoA Edge Cases
         {
             let numbers1 = vec![1, 2, 3, 4, 5];
             let numbers2 = vec![6, 7, 8, 9, 10];
-            let mut runs1 = RunsSoA::from_sorted_vec(numbers1);
-            let runs2 = RunsSoA::from_sorted_vec(numbers2);
+            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
+            let runs2 = RangesSoA::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.starts.len(), 1);
@@ -442,12 +541,12 @@ mod tests {
             assert_eq!(runs1.counts[0], 10);
         }
 
-        // RunsAoS Edge Cases
+        // RangesAoS Edge Cases
         {
             let numbers1 = vec![1, 2, 3, 4, 5];
             let numbers2 = vec![6, 7, 8, 9, 10];
-            let mut runs1 = RunsAoS::from_sorted_vec(numbers1);
-            let runs2 = RunsAoS::from_sorted_vec(numbers2);
+            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
+            let runs2 = RangesAoS::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.runs.len(), 1);
@@ -455,12 +554,12 @@ mod tests {
             assert_eq!(runs1.runs[0].count, 10);
         }
 
-        // Overlapping RunsSoA
+        // Overlapping RangesSoA
         {
             let numbers1 = vec![1, 2, 3, 4, 5];
             let numbers2 = vec![4, 5, 6, 7, 8];
-            let mut runs1 = RunsSoA::from_sorted_vec(numbers1);
-            let runs2 = RunsSoA::from_sorted_vec(numbers2);
+            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
+            let runs2 = RangesSoA::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.starts.len(), 1);
@@ -468,12 +567,12 @@ mod tests {
             assert_eq!(runs1.counts[0], 8);
         }
 
-        // Overlapping RunsAoS
+        // Overlapping RangesAoS
         {
             let numbers1 = vec![1, 2, 3, 4, 5];
             let numbers2 = vec![4, 5, 6, 7, 8];
-            let mut runs1 = RunsAoS::from_sorted_vec(numbers1);
-            let runs2 = RunsAoS::from_sorted_vec(numbers2);
+            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
+            let runs2 = RangesAoS::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.runs.len(), 1);
@@ -481,12 +580,12 @@ mod tests {
             assert_eq!(runs1.runs[0].count, 8);
         }
 
-        // Adjacent RunsSoA
+        // Adjacent RangesSoA
         {
             let numbers1 = vec![1, 2, 3];
             let numbers2 = vec![4, 5, 6];
-            let mut runs1 = RunsSoA::from_sorted_vec(numbers1);
-            let runs2 = RunsSoA::from_sorted_vec(numbers2);
+            let mut runs1 = RangesSoA::from_sorted_vec(numbers1);
+            let runs2 = RangesSoA::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.starts.len(), 1);
@@ -494,12 +593,12 @@ mod tests {
             assert_eq!(runs1.counts[0], 6);
         }
 
-        // Adjacent RunsAoS
+        // Adjacent RangesAoS
         {
             let numbers1 = vec![1, 2, 3];
             let numbers2 = vec![4, 5, 6];
-            let mut runs1 = RunsAoS::from_sorted_vec(numbers1);
-            let runs2 = RunsAoS::from_sorted_vec(numbers2);
+            let mut runs1 = RangesAoS::from_sorted_vec(numbers1);
+            let runs2 = RangesAoS::from_sorted_vec(numbers2);
             runs1.merge(&runs2);
 
             assert_eq!(runs1.runs.len(), 1);
@@ -514,8 +613,8 @@ mod tests {
         let range = 1..1_000_001;
         let gaps = vec![50, 500_000, 600_000, 900_000];
         let numbers = generate_sorted_unique_vec(range, &gaps);
-        let runs_soa = RunsSoA::from_sorted_vec(numbers.clone());
-        let runs_aos = RunsAoS::from_sorted_vec(numbers.clone());
+        let runs_soa = RangesSoA::from_sorted_vec(numbers.clone());
+        let runs_aos = RangesAoS::from_sorted_vec(numbers.clone());
 
         let mut missing_numbers = vec![50, 500_000, 600_000, 900_000];
         // add more random numbers to missing list to make the test harder
@@ -533,5 +632,51 @@ mod tests {
 
         assert_eq!(missing_soa, gaps);
         assert_eq!(missing_aos, gaps);
+    }
+    #[test]
+    fn test_from_sorted_vec() {
+        let nums = vec![1, 2, 3, 5, 6, 8, 9, 10];
+        let set = BlockRangeSet::from_sorted_vec(nums);
+        assert_eq!(set.ranges.len(), 3);
+        assert_eq!(set.ranges[0].start, 1);
+        assert_eq!(set.ranges[0].end, 3);
+        assert_eq!(set.ranges[1].start, 5);
+        assert_eq!(set.ranges[1].end, 6);
+        assert_eq!(set.ranges[2].start, 8);
+        assert_eq!(set.ranges[2].end, 10);
+    }
+
+    #[test]
+    fn test_merge() {
+        let mut set1 = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 7, 8]);
+        let set2 = BlockRangeSet::from_sorted_vec(vec![3, 4, 5, 8, 9]);
+        set1.merge(&set2);
+        assert_eq!(set1.ranges.len(), 2);
+        assert_eq!(set1.ranges[0].start, 1);
+        assert_eq!(set1.ranges[0].end, 5);
+        assert_eq!(set1.ranges[1].start, 7);
+        assert_eq!(set1.ranges[1].end, 9);
+    }
+
+    #[test]
+    fn test_find_missing() {
+        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 6, 7]);
+        let missing = set.find_missing(&[1, 2, 4, 5, 6, 8]);
+        assert_eq!(missing, vec![4, 5, 8]);
+    }
+
+    #[test]
+    fn test_len() {
+        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 5, 6]);
+        assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn test_serialization() {
+        let set = BlockRangeSet::from_sorted_vec(vec![1, 2, 3, 5, 6]);
+        let serialized = bincode::serialize(&set).expect("Failed to serialize");
+        let deserialized: BlockRangeSet =
+            bincode::deserialize(&serialized).expect("Failed to deserialize");
+        assert_eq!(deserialized.len(), set.len());
     }
 }
