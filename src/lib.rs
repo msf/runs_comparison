@@ -34,62 +34,6 @@ pub trait BlockRangesTrait {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct HashSetRanges {
-    numbers: HashSet<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TreeSetRanges {
-    numbers: BTreeSet<u64>,
-}
-
-impl BlockRangesTrait for HashSetRanges {
-    fn from_sorted_vec(numbers: &[u64]) -> Self {
-        Self {
-            numbers: numbers.to_vec().into_iter().collect(),
-        }
-    }
-
-    fn merge(&mut self, other: &Self) {
-        self.numbers.extend(other.numbers.iter().copied());
-    }
-
-    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
-        nums.iter()
-            .filter(|&&num| !self.numbers.contains(&num))
-            .copied()
-            .collect()
-    }
-
-    fn len(&self) -> usize {
-        self.numbers.len()
-    }
-}
-
-impl BlockRangesTrait for TreeSetRanges {
-    fn from_sorted_vec(numbers: &[u64]) -> Self {
-        Self {
-            numbers: numbers.to_vec().into_iter().collect(),
-        }
-    }
-
-    fn merge(&mut self, other: &Self) {
-        self.numbers.extend(other.numbers.iter().copied());
-    }
-
-    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
-        nums.iter()
-            .filter(|&&num| !self.numbers.contains(&num))
-            .copied()
-            .collect()
-    }
-
-    fn len(&self) -> usize {
-        self.numbers.len()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlockRange {
     pub start: u64,
     pub end: u64,
@@ -195,6 +139,72 @@ impl BlockRangesTrait for BlockRangeSet {
             .iter()
             .map(|range| (range.end - range.start + 1) as usize)
             .sum()
+    }
+}
+
+impl BlockRangeSet {
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    fn ranges(&self) -> Vec<BlockRange> {
+        self.ranges.clone()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HashSetRanges {
+    numbers: HashSet<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TreeSetRanges {
+    numbers: BTreeSet<u64>,
+}
+
+impl BlockRangesTrait for HashSetRanges {
+    fn from_sorted_vec(numbers: &[u64]) -> Self {
+        Self {
+            numbers: numbers.to_vec().into_iter().collect(),
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.numbers.extend(other.numbers.iter().copied());
+    }
+
+    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
+        nums.iter()
+            .filter(|&&num| !self.numbers.contains(&num))
+            .copied()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.numbers.len()
+    }
+}
+
+impl BlockRangesTrait for TreeSetRanges {
+    fn from_sorted_vec(numbers: &[u64]) -> Self {
+        Self {
+            numbers: numbers.to_vec().into_iter().collect(),
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.numbers.extend(other.numbers.iter().copied());
+    }
+
+    fn find_missing(&self, nums: &[u64]) -> Vec<u64> {
+        nums.iter()
+            .filter(|&&num| !self.numbers.contains(&num))
+            .copied()
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.numbers.len()
     }
 }
 
